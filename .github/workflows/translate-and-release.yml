@@ -1,0 +1,244 @@
+name: Auto-translate and release English addon
+
+on:
+  schedule:
+    # Run every hour at :00 minutes.
+    - cron: "0 * * * *"
+  # Allow triggering manually from the Actions tab.
+  workflow_dispatch:
+
+permissions:
+  contents: write  # needed to push commits and create releases
+
+jobs:
+  translate-and-release:
+    runs-on: ubuntu-latest
+
+    steps:
+      # ------------------------------------------------------------------ #
+      # 1. Check out this fork (the repo running this workflow).            #
+      # ------------------------------------------------------------------ #
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # full history so fast-forward merges work
+
+      # ------------------------------------------------------------------ #
+      # 2. GATE 1 — Commit-hash check (essentially free).                  #
+      #    We store the last successfully processed upstream HEAD in        #
+      #    .github/upstream_head.txt.  If the hash matches today's HEAD    #
+      #    we exit immediately without installing anything.                 #
+      # ------------------------------------------------------------------ #
+      - name: Fetch upstream master
+        run: |
+          git remote add upstream https://github.com/hxebolax/Tienda-para-NVDA.git || true
+          git fetch upstream master --no-tags
+
+      - name: Compare upstream HEAD to last processed commit
+        id: hash_check
+        run: |
+          UPSTREAM_HEAD=$(git rev-parse upstream/master)
+          echo "upstream_head=$UPSTREAM_HEAD" >> "$GITHUB_OUTPUT"
+
+          STORED=""
+          if [ -f .github/upstream_head.txt ]; then
+            STORED=$(cat .github/upstream_head.txt)
+          fi
+
+          if [ "$UPSTREAM_HEAD" = "$STORED" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "Upstream HEAD unchanged ($UPSTREAM_HEAD) — skipping all work."
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "Upstream HEAD changed: ${STORED:-<none>} → $UPSTREAM_HEAD"
+          fi
+
+      # Every subsequent step is gated on the upstream having moved.
+      # ------------------------------------------------------------------ #
+      # 3. Merge upstream changes into this branch.                        #
+      # ------------------------------------------------------------------ #
+      - name: Configure git identity
+        if: steps.hash_check.outputs.changed == 'true'
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Merge upstream changes
+        if: steps.hash_check.outputs.changed == 'true'
+        run: git merge --ff-only upstream/master || git merge --no-edit upstream/master
+
+      # ------------------------------------------------------------------ #
+      # 4. Install tools (only reached when upstream actually changed).    #
+      # ------------------------------------------------------------------ #
+      - name: Set up Python
+        if: steps.hash_check.outputs.changed == 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install Python dependencies
+        if: steps.hash_check.outputs.changed == 'true'
+        run: pip install --quiet scons markdown polib openai
+
+      - name: Install gettext tools (msgfmt / xgettext / msginit / msgmerge)
+        if: steps.hash_check.outputs.changed == 'true'
+        run: sudo apt-get install -y --no-install-recommends gettext
+
+      # ------------------------------------------------------------------ #
+      # 5. Regenerate .pot from the merged source (the authoritative diff  #
+      #    of all translatable strings in the current codebase).           #
+      # ------------------------------------------------------------------ #
+      - name: Regenerate TiendaNVDA.pot from source
+        if: steps.hash_check.outputs.changed == 'true'
+        run: scons pot
+
+      # ------------------------------------------------------------------ #
+      # 6. Bootstrap or update the English .po from the new .pot.          #
+      #    msgmerge adds new entries and marks removed ones obsolete —      #
+      #    this is the exact diff of what needs translating.               #
+      # ------------------------------------------------------------------ #
+      - name: Prepare English locale directory
+        if: steps.hash_check.outputs.changed == 'true'
+        run: mkdir -p addon/locale/en/LC_MESSAGES
+
+      - name: Bootstrap or merge English .po from .pot
+        if: steps.hash_check.outputs.changed == 'true'
+        run: |
+          PO=addon/locale/en/LC_MESSAGES/nvda.po
+          POT=TiendaNVDA.pot
+          if [ ! -f "$PO" ]; then
+            echo "First run — creating English .po from .pot …"
+            msginit --no-translator --input="$POT" --locale=en --output="$PO"
+          else
+            echo "Merging .pot diff into existing English .po …"
+            # --no-fuzzy-matching: changed strings become untranslated, not fuzzy,
+            # so the AI sees them as needing a fresh translation rather than a review.
+            msgmerge --update --no-fuzzy-matching --quiet "$PO" "$POT"
+          fi
+
+      # ------------------------------------------------------------------ #
+      # 7. GATE 2 — .po diff check.                                        #
+      #    Count genuinely untranslated entries using polib (already       #
+      #    installed).  If there are none, just record the new hash and    #
+      #    push — no AI call, no build, no release.                        #
+      # ------------------------------------------------------------------ #
+      - name: Count untranslated entries in English .po
+        if: steps.hash_check.outputs.changed == 'true'
+        id: po_check
+        run: |
+          COUNT=$(python3 - <<'EOF'
+          import polib, sys
+          po = polib.pofile("addon/locale/en/LC_MESSAGES/nvda.po")
+          print(len(po.untranslated_entries()))
+          EOF
+          )
+          echo "untranslated=$COUNT" >> "$GITHUB_OUTPUT"
+          if [ "$COUNT" -gt 0 ]; then
+            echo "needs_translation=true" >> "$GITHUB_OUTPUT"
+            echo "$COUNT untranslated string(s) found — translation required."
+          else
+            echo "needs_translation=false" >> "$GITHUB_OUTPUT"
+            echo "All strings already translated — recording hash and exiting."
+          fi
+
+      # Upstream moved but no new strings — just record the hash so next
+      # run doesn't re-do this work.
+      - name: Record upstream hash (no new strings)
+        if: >-
+          steps.hash_check.outputs.changed == 'true' &&
+          steps.po_check.outputs.needs_translation == 'false'
+        run: |
+          echo "${{ steps.hash_check.outputs.upstream_head }}" > .github/upstream_head.txt
+          git add .github/upstream_head.txt
+          if ! git diff --cached --quiet; then
+            git commit -m "chore: record upstream HEAD (no new strings to translate)"
+            git push origin HEAD
+          fi
+
+      # ------------------------------------------------------------------ #
+      # 8. Translate only the untranslated entries via GitHub Models.      #
+      #    GITHUB_TOKEN is free, built-in, and requires no external        #
+      #    account.                                                         #
+      # ------------------------------------------------------------------ #
+      - name: Translate untranslated strings with GitHub Models (GPT-4o-mini)
+        if: >-
+          steps.hash_check.outputs.changed == 'true' &&
+          steps.po_check.outputs.needs_translation == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python .github/scripts/translate_to_english.py \
+            addon/locale/en/LC_MESSAGES/nvda.po
+
+      # ------------------------------------------------------------------ #
+      # 9. Build the .nvda-addon stamped with the current UTC date/time.  #
+      # ------------------------------------------------------------------ #
+      - name: Compute release version
+        if: >-
+          steps.hash_check.outputs.changed == 'true' &&
+          steps.po_check.outputs.needs_translation == 'true'
+        id: version
+        run: |
+          # Format: YYYY-MM-DD-HHMM  (e.g. 2026-05-11-0000)
+          RELEASE_VERSION=$(date -u +"%Y-%m-%d-%H%M")
+          echo "release_version=$RELEASE_VERSION"        >> "$GITHUB_OUTPUT"
+          echo "tag=v$RELEASE_VERSION"                   >> "$GITHUB_OUTPUT"
+          echo "filename=Tienda-NVDA_${RELEASE_VERSION}.nvda-addon" >> "$GITHUB_OUTPUT"
+
+      - name: Build English .nvda-addon with SCons
+        if: >-
+          steps.hash_check.outputs.changed == 'true' &&
+          steps.po_check.outputs.needs_translation == 'true'
+        run: scons version="${{ steps.version.outputs.release_version }}"
+
+      - name: Rename addon to release filename
+        if: >-
+          steps.hash_check.outputs.changed == 'true' &&
+          steps.po_check.outputs.needs_translation == 'true'
+        run: |
+          SRC=$(ls TiendaNVDA-*.nvda-addon 2>/dev/null | head -1)
+          if [ -z "$SRC" ]; then
+            echo "Error: no .nvda-addon produced by SCons." >&2
+            exit 1
+          fi
+          mv "$SRC" "${{ steps.version.outputs.filename }}"
+          echo "Built: ${{ steps.version.outputs.filename }}"
+
+      # ------------------------------------------------------------------ #
+      # 10. Commit the updated .po + upstream hash, push, create release.  #
+      # ------------------------------------------------------------------ #
+      - name: Commit updated English .po and upstream hash
+        if: >-
+          steps.hash_check.outputs.changed == 'true' &&
+          steps.po_check.outputs.needs_translation == 'true'
+        run: |
+          echo "${{ steps.hash_check.outputs.upstream_head }}" > .github/upstream_head.txt
+          git add addon/locale/en/LC_MESSAGES/nvda.po .github/upstream_head.txt
+          if ! git diff --cached --quiet; then
+            git commit -m "chore: English translations [${{ steps.version.outputs.release_version }}] (upstream ${{ steps.hash_check.outputs.upstream_head }})"
+          fi
+
+      - name: Push commits
+        if: >-
+          steps.hash_check.outputs.changed == 'true' &&
+          steps.po_check.outputs.needs_translation == 'true'
+        run: git push origin HEAD
+
+      - name: Create GitHub Release
+        if: >-
+          steps.hash_check.outputs.changed == 'true' &&
+          steps.po_check.outputs.needs_translation == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: "Tienda-NVDA English — ${{ steps.version.outputs.release_version }}"
+          body: |
+            Automated English translation of [Tienda-para-NVDA](https://github.com/hxebolax/Tienda-para-NVDA).
+
+            Strings translated from Spanish to English by GitHub Models (GPT-4o-mini).
+
+            **Upstream commit:** `${{ steps.hash_check.outputs.upstream_head }}`
+            **Filename:** `${{ steps.version.outputs.filename }}`
+          files: ${{ steps.version.outputs.filename }}
+          fail_on_unmatched_files: true

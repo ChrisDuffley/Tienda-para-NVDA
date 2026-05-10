@@ -13,9 +13,6 @@ permissions:
 jobs:
   translate-and-release:
     runs-on: ubuntu-latest
-    env:
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-
     steps:
       # ------------------------------------------------------------------ #
       # 1. Two checkouts side by side:                                      #
@@ -23,13 +20,13 @@ jobs:
       #    fork/     — stores English .po history, receives commits back    #
       # ------------------------------------------------------------------ #
       - name: Check out upstream source (hxebolax/Tienda-para-NVDA)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           repository: hxebolax/Tienda-para-NVDA
           path: upstream
 
       - name: Check out fork (this repo — English .po store)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           path: fork
           fetch-depth: 0
@@ -92,7 +89,7 @@ jobs:
       # ------------------------------------------------------------------ #
       - name: Set up Python
         if: steps.gate.outputs.proceed == 'true'
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.11"
           cache: pip
@@ -261,7 +258,7 @@ jobs:
         if: >-
           steps.gate.outputs.proceed == 'true' &&
           steps.po_check.outputs.needs_translation == 'true'
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ steps.version.outputs.tag }}
           name: "Tienda-NVDA English — ${{ steps.version.outputs.release_version }}"

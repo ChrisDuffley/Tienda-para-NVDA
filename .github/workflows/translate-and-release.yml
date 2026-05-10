@@ -112,62 +112,80 @@ jobs:
         run: scons pot
 
       # ------------------------------------------------------------------ #
-      # 5. Inject the fork's existing English .po into the upstream tree   #
-      #    so msgmerge can diff against it, then bootstrap or merge.       #
+      # 5. Merge .pot into existing English .po (pure polib — no CLI).    #
+      #                                                                     #
+      #    • Bootstrap: copy the .pot (all msgstr blank → all untranslated)#
+      #    • Merge: add new msgids from .pot, drop obsolete ones, keep     #
+      #      existing translations, clear changed msgids so the AI always  #
+      #      gets a fresh translation (equivalent to --no-fuzzy-matching). #
       # ------------------------------------------------------------------ #
-      - name: Copy existing English .po into upstream tree
-        if: steps.gate.outputs.proceed == 'true'
-        run: |
-          mkdir -p upstream/addon/locale/en/LC_MESSAGES
-          if [ -f fork/addon/locale/en/LC_MESSAGES/nvda.po ]; then
-            cp fork/addon/locale/en/LC_MESSAGES/nvda.po \
-               upstream/addon/locale/en/LC_MESSAGES/nvda.po
-            echo "Existing English .po injected."
-          else
-            echo "No existing English .po — msginit will create one."
-          fi
-
-      - name: Bootstrap or merge English .po from .pot
-        if: steps.gate.outputs.proceed == 'true'
-        working-directory: upstream
-        run: |
-          PO=addon/locale/en/LC_MESSAGES/nvda.po
-          POT=TiendaNVDA.pot
-          if [ ! -f "$PO" ]; then
-            # msginit --locale=en copies msgid→msgstr verbatim (since gettext
-            # treats 'en' as the source language), so polib would see every
-            # entry as "translated".  Instead, copy the .pot directly: it has
-            # the correct headers and all msgstr are already blank.
-            cp "$POT" "$PO"
-            echo "Created new English .po by copying .pot (blank msgstr)."
-          else
-            # --no-fuzzy-matching: changed strings become untranslated so the
-            # AI always produces a fresh translation rather than a fuzzy guess.
-            msgmerge --update --no-fuzzy-matching --quiet "$PO" "$POT"
-            echo "Merged upstream .pot into existing English .po."
-          fi
-
-      # ------------------------------------------------------------------ #
-      # 6. Definitive untranslated count using polib (already installed).  #
-      # ------------------------------------------------------------------ #
-      - name: Count untranslated entries
+      - name: Merge .pot into English .po and count untranslated (polib)
         if: steps.gate.outputs.proceed == 'true'
         id: po_check
         run: |
-          COUNT=$(python3 - <<'EOF'
-          import polib
-          po = polib.pofile("upstream/addon/locale/en/LC_MESSAGES/nvda.po")
-          print(len(po.untranslated_entries()))
+          python3 - <<'EOF'
+          import os, shutil, polib
+
+          POT_PATH = "upstream/TiendaNVDA.pot"
+          PO_PATH  = "upstream/addon/locale/en/LC_MESSAGES/nvda.po"
+
+          os.makedirs(os.path.dirname(PO_PATH), exist_ok=True)
+
+          pot = polib.pofile(POT_PATH)
+
+          if not os.path.exists(PO_PATH):
+              # Bootstrap: copy .pot as-is — all msgstr are blank.
+              shutil.copy(POT_PATH, PO_PATH)
+              po = polib.pofile(PO_PATH)
+              print(f"Bootstrapped English .po from .pot ({len(po.untranslated_entries())} untranslated).")
+          else:
+              po = polib.pofile(PO_PATH)
+              existing = {e.msgid: e.msgstr for e in po if e.msgstr}
+
+              # Rebuild from .pot so metadata and order stay in sync.
+              new_po = polib.POFile()
+              new_po.metadata = pot.metadata.copy()
+              new_po.metadata["Language"] = "en"
+
+              added = removed = kept = reset = 0
+              pot_ids = {e.msgid for e in pot}
+
+              for pot_entry in pot:
+                  entry = polib.POEntry(
+                      msgid=pot_entry.msgid,
+                      occurrences=pot_entry.occurrences,
+                      comment=pot_entry.comment,
+                      flags=pot_entry.flags,
+                  )
+                  if pot_entry.msgid in existing:
+                      # Exact match — keep the existing translation.
+                      entry.msgstr = existing[pot_entry.msgid]
+                      kept += 1
+                  else:
+                      entry.msgstr = ""
+                      added += 1
+                  new_po.append(entry)
+
+              removed = len(existing) - kept
+              new_po.save(PO_PATH)
+              print(f"Merged: {kept} kept, {added} new, {removed} removed.")
+
+          po = polib.pofile(PO_PATH)
+          count = len(po.untranslated_entries())
+          print(f"Untranslated: {count}")
+
+          # Write outputs for subsequent steps.
+          github_output = os.environ.get("GITHUB_OUTPUT", "")
+          if github_output:
+              with open(github_output, "a") as f:
+                  f.write(f"untranslated={count}\n")
+                  f.write(f"needs_translation={'true' if count > 0 else 'false'}\n")
+
+          if count > 0:
+              print(f"{count} string(s) need translating.")
+          else:
+              print("All strings already translated after merge.")
           EOF
-          )
-          echo "untranslated=$COUNT" >> "$GITHUB_OUTPUT"
-          if [ "$COUNT" -gt 0 ]; then
-            echo "needs_translation=true" >> "$GITHUB_OUTPUT"
-            echo "$COUNT string(s) need translating."
-          else
-            echo "needs_translation=false" >> "$GITHUB_OUTPUT"
-            echo "All strings already translated after merge."
-          fi
 
       # Record the upstream hash and exit if the merge added nothing new.
       - name: Record upstream hash (no new strings after merge)

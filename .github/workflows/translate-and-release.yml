@@ -8,6 +8,279 @@ on:
   workflow_dispatch:
 
 permissions:
+  contents: write
+
+jobs:
+  translate-and-release:
+    runs-on: ubuntu-latest
+
+    steps:
+      # ------------------------------------------------------------------ #
+      # 1. Two checkouts side by side:                                      #
+      #    upstream/ — Spanish source, SCons build system (read-only)       #
+      #    fork/     — stores English .po history, receives commits back    #
+      # ------------------------------------------------------------------ #
+      - name: Check out upstream source (hxebolax/Tienda-para-NVDA)
+        uses: actions/checkout@v4
+        with:
+          repository: hxebolax/Tienda-para-NVDA
+          path: upstream
+
+      - name: Check out fork (this repo — English .po store)
+        uses: actions/checkout@v4
+        with:
+          path: fork
+          fetch-depth: 0
+
+      # ------------------------------------------------------------------ #
+      # 2. GATE — Cheap early-exit check using only pre-installed python3. #
+      #                                                                     #
+      #    Exit immediately (no pip, no apt) when:                         #
+      #      • upstream HEAD matches the last processed hash, AND           #
+      #      • the committed English .po has zero untranslated entries      #
+      # ------------------------------------------------------------------ #
+      - name: Decide whether any work is needed
+        id: gate
+        run: |
+          UPSTREAM_HEAD=$(git -C upstream rev-parse HEAD)
+          echo "upstream_head=$UPSTREAM_HEAD" >> "$GITHUB_OUTPUT"
+
+          STORED=""
+          [ -f fork/.github/upstream_head.txt ] && STORED=$(cat fork/.github/upstream_head.txt)
+
+          # If upstream moved → always proceed (new source strings may exist).
+          if [ "$UPSTREAM_HEAD" != "$STORED" ]; then
+            echo "proceed=true" >> "$GITHUB_OUTPUT"
+            echo "Upstream moved: ${STORED:-<none>} → $UPSTREAM_HEAD"
+            exit 0
+          fi
+
+          # Upstream unchanged — check whether the committed .po still has work.
+          PO="fork/addon/locale/en/LC_MESSAGES/nvda.po"
+          if [ ! -f "$PO" ]; then
+            echo "proceed=true" >> "$GITHUB_OUTPUT"
+            echo "English .po does not exist yet — will create it."
+            exit 0
+          fi
+
+          COUNT=$(python3 - <<'PYEOF'
+          import re
+          with open("fork/addon/locale/en/LC_MESSAGES/nvda.po", encoding="utf-8") as f:
+              text = f.read()
+          blocks = re.split(r'\n{2,}', text.strip())
+          count = sum(
+              1 for b in blocks
+              if re.search(r'^msgid ".+"', b, re.M)
+              and re.search(r'^msgstr ""$', b, re.M)
+          )
+          print(count)
+          PYEOF
+          )
+
+          if [ "$COUNT" -gt 0 ]; then
+            echo "proceed=true" >> "$GITHUB_OUTPUT"
+            echo "Upstream unchanged but English .po has $COUNT untranslated entry/entries."
+          else
+            echo "proceed=false" >> "$GITHUB_OUTPUT"
+            echo "Upstream unchanged and English .po is fully translated — nothing to do."
+          fi
+
+      # ------------------------------------------------------------------ #
+      # 3. Install tools (only when there is real work to do).             #
+      # ------------------------------------------------------------------ #
+      - name: Set up Python
+        if: steps.gate.outputs.proceed == 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install Python dependencies
+        if: steps.gate.outputs.proceed == 'true'
+        run: pip install --quiet scons markdown polib openai
+
+      - name: Install gettext tools
+        if: steps.gate.outputs.proceed == 'true'
+        run: sudo apt-get install -y --no-install-recommends gettext
+
+      # ------------------------------------------------------------------ #
+      # 4. Generate .pot directly from the upstream Spanish source.        #
+      #    This is the authoritative list of every translatable string.    #
+      # ------------------------------------------------------------------ #
+      - name: Generate TiendaNVDA.pot from upstream source
+        if: steps.gate.outputs.proceed == 'true'
+        working-directory: upstream
+        run: scons pot
+
+      # ------------------------------------------------------------------ #
+      # 5. Inject the fork's existing English .po into the upstream tree   #
+      #    so msgmerge can diff against it, then bootstrap or merge.       #
+      # ------------------------------------------------------------------ #
+      - name: Copy existing English .po into upstream tree
+        if: steps.gate.outputs.proceed == 'true'
+        run: |
+          mkdir -p upstream/addon/locale/en/LC_MESSAGES
+          if [ -f fork/addon/locale/en/LC_MESSAGES/nvda.po ]; then
+            cp fork/addon/locale/en/LC_MESSAGES/nvda.po \
+               upstream/addon/locale/en/LC_MESSAGES/nvda.po
+            echo "Existing English .po injected."
+          else
+            echo "No existing English .po — msginit will create one."
+          fi
+
+      - name: Bootstrap or merge English .po from .pot
+        if: steps.gate.outputs.proceed == 'true'
+        working-directory: upstream
+        run: |
+          PO=addon/locale/en/LC_MESSAGES/nvda.po
+          POT=TiendaNVDA.pot
+          if [ ! -f "$PO" ]; then
+            msginit --no-translator --input="$POT" --locale=en --output="$PO"
+            echo "Created new English .po from .pot."
+          else
+            # --no-fuzzy-matching: changed strings become untranslated so the
+            # AI always produces a fresh translation rather than a fuzzy guess.
+            msgmerge --update --no-fuzzy-matching --quiet "$PO" "$POT"
+            echo "Merged upstream .pot into existing English .po."
+          fi
+
+      # ------------------------------------------------------------------ #
+      # 6. Definitive untranslated count using polib (already installed).  #
+      # ------------------------------------------------------------------ #
+      - name: Count untranslated entries
+        if: steps.gate.outputs.proceed == 'true'
+        id: po_check
+        run: |
+          COUNT=$(python3 - <<'EOF'
+          import polib
+          po = polib.pofile("upstream/addon/locale/en/LC_MESSAGES/nvda.po")
+          print(len(po.untranslated_entries()))
+          EOF
+          )
+          echo "untranslated=$COUNT" >> "$GITHUB_OUTPUT"
+          if [ "$COUNT" -gt 0 ]; then
+            echo "needs_translation=true" >> "$GITHUB_OUTPUT"
+            echo "$COUNT string(s) need translating."
+          else
+            echo "needs_translation=false" >> "$GITHUB_OUTPUT"
+            echo "All strings already translated after merge."
+          fi
+
+      # Record the upstream hash and exit if the merge added nothing new.
+      - name: Record upstream hash (no new strings after merge)
+        if: >-
+          steps.gate.outputs.proceed == 'true' &&
+          steps.po_check.outputs.needs_translation == 'false'
+        run: |
+          cd fork
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          echo "${{ steps.gate.outputs.upstream_head }}" > .github/upstream_head.txt
+          git add .github/upstream_head.txt
+          if ! git diff --cached --quiet; then
+            git commit -m "chore: record upstream HEAD (no new strings to translate)"
+            git push origin HEAD
+          fi
+
+      # ------------------------------------------------------------------ #
+      # 7. Translate untranslated strings using GitHub Models (GPT-4o-mini)#
+      #    GITHUB_TOKEN is automatically provided — no external service.   #
+      # ------------------------------------------------------------------ #
+      - name: Translate with GitHub Models (GPT-4o-mini)
+        if: >-
+          steps.gate.outputs.proceed == 'true' &&
+          steps.po_check.outputs.needs_translation == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python fork/.github/scripts/translate_to_english.py \
+            upstream/addon/locale/en/LC_MESSAGES/nvda.po
+
+      # ------------------------------------------------------------------ #
+      # 8. Build the .nvda-addon from the upstream source tree with the    #
+      #    newly translated English locale included.                        #
+      # ------------------------------------------------------------------ #
+      - name: Compute release version
+        if: >-
+          steps.gate.outputs.proceed == 'true' &&
+          steps.po_check.outputs.needs_translation == 'true'
+        id: version
+        run: |
+          RELEASE_VERSION=$(date -u +"%Y-%m-%d-%H%M")
+          echo "release_version=$RELEASE_VERSION"                    >> "$GITHUB_OUTPUT"
+          echo "tag=v$RELEASE_VERSION"                               >> "$GITHUB_OUTPUT"
+          echo "filename=Tienda-NVDA_${RELEASE_VERSION}.nvda-addon" >> "$GITHUB_OUTPUT"
+
+      - name: Build English .nvda-addon with SCons
+        if: >-
+          steps.gate.outputs.proceed == 'true' &&
+          steps.po_check.outputs.needs_translation == 'true'
+        working-directory: upstream
+        run: scons version="${{ steps.version.outputs.release_version }}"
+
+      - name: Move addon to workspace root with release filename
+        if: >-
+          steps.gate.outputs.proceed == 'true' &&
+          steps.po_check.outputs.needs_translation == 'true'
+        run: |
+          SRC=$(ls upstream/TiendaNVDA-*.nvda-addon 2>/dev/null | head -1)
+          if [ -z "$SRC" ]; then
+            echo "Error: no .nvda-addon produced by SCons." >&2
+            exit 1
+          fi
+          mv "$SRC" "${{ steps.version.outputs.filename }}"
+          echo "Built: ${{ steps.version.outputs.filename }}"
+
+      # ------------------------------------------------------------------ #
+      # 9. Copy the translated .po back to the fork, commit, and push.     #
+      # ------------------------------------------------------------------ #
+      - name: Commit English .po and upstream hash to fork
+        if: >-
+          steps.gate.outputs.proceed == 'true' &&
+          steps.po_check.outputs.needs_translation == 'true'
+        run: |
+          cd fork
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          mkdir -p addon/locale/en/LC_MESSAGES
+          cp ../upstream/addon/locale/en/LC_MESSAGES/nvda.po \
+             addon/locale/en/LC_MESSAGES/nvda.po
+          echo "${{ steps.gate.outputs.upstream_head }}" > .github/upstream_head.txt
+          git add addon/locale/en/LC_MESSAGES/nvda.po .github/upstream_head.txt
+          if ! git diff --cached --quiet; then
+            git commit -m "chore: English translations [${{ steps.version.outputs.release_version }}] (upstream ${{ steps.gate.outputs.upstream_head }})"
+            git push origin HEAD
+          fi
+
+      # ------------------------------------------------------------------ #
+      # 10. Create a GitHub Release and attach the built .nvda-addon.      #
+      # ------------------------------------------------------------------ #
+      - name: Create GitHub Release
+        if: >-
+          steps.gate.outputs.proceed == 'true' &&
+          steps.po_check.outputs.needs_translation == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: "Tienda-NVDA English — ${{ steps.version.outputs.release_version }}"
+          body: |
+            Automated English translation of [Tienda-para-NVDA](https://github.com/hxebolax/Tienda-para-NVDA).
+
+            Strings translated from Spanish to English by GitHub Models (GPT-4o-mini).
+
+            **Upstream commit:** `${{ steps.gate.outputs.upstream_head }}`
+            **Filename:** `${{ steps.version.outputs.filename }}`
+          files: ${{ steps.version.outputs.filename }}
+          fail_on_unmatched_files: true
+
+on:
+  schedule:
+    # Run every hour at :00 minutes.
+    - cron: "0 * * * *"
+  # Allow triggering manually from the Actions tab.
+  workflow_dispatch:
+
+permissions:
   contents: write  # needed to push commits and create releases
 
 jobs:

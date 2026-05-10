@@ -134,8 +134,12 @@ jobs:
           PO=addon/locale/en/LC_MESSAGES/nvda.po
           POT=TiendaNVDA.pot
           if [ ! -f "$PO" ]; then
-            msginit --no-translator --input="$POT" --locale=en --output="$PO"
-            echo "Created new English .po from .pot."
+            # msginit --locale=en copies msgid→msgstr verbatim (since gettext
+            # treats 'en' as the source language), so polib would see every
+            # entry as "translated".  Instead, copy the .pot directly: it has
+            # the correct headers and all msgstr are already blank.
+            cp "$POT" "$PO"
+            echo "Created new English .po by copying .pot (blank msgstr)."
           else
             # --no-fuzzy-matching: changed strings become untranslated so the
             # AI always produces a fresh translation rather than a fuzzy guess.
@@ -271,4 +275,3 @@ jobs:
             **Filename:** `${{ steps.version.outputs.filename }}`
           files: ${{ steps.version.outputs.filename }}
           fail_on_unmatched_files: true
-

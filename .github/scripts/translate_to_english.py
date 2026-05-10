@@ -69,8 +69,8 @@ def _translate_batch(client: OpenAI, texts: list[str]) -> list[str]:
     numbered = "\n".join(f"{i+1}. {t}" for i, t in enumerate(texts))
     user_prompt = (
         f"Translate each of the following {len(texts)} Spanish UI string(s) to English. "
-        f"Return a JSON array of exactly {len(texts)} translated string(s), "
-        f"in the same order, with no additional keys or wrapper object.\n\n"
+        f'Return a JSON object with a single key "translations" whose value is an array '
+        f"of exactly {len(texts)} translated string(s) in the same order.\n\n"
         f"{numbered}"
     )
 

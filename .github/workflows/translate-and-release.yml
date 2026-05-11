@@ -9,6 +9,7 @@ on:
 
 permissions:
   contents: write
+  models: read   # required for GitHub Models API (GPT-4o-mini translation)
 
 jobs:
   translate-and-release:

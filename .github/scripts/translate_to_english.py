@@ -107,6 +107,19 @@ def _translate_batch(client: OpenAI, texts: list[str]) -> list[str]:
     return [str(r) for r in results]
 
 
+def _match_newline_envelope(msgid: str, translation: str) -> str:
+    """
+    msgfmt requires that if msgid begins/ends with '\\n', msgstr must too.
+    The AI strips leading/trailing newlines from the text it receives, so we
+    re-apply them here to avoid 'entries do not both begin with \\n' errors.
+    """
+    if msgid.startswith("\n") and not translation.startswith("\n"):
+        translation = "\n" + translation
+    if msgid.endswith("\n") and not translation.endswith("\n"):
+        translation = translation + "\n"
+    return translation
+
+
 def translate_po_file(po_path: str, token: str) -> bool:
     """
     Read *po_path*, translate every untranslated entry from Spanish to English
@@ -143,7 +156,7 @@ def translate_po_file(po_path: str, token: str) -> bool:
             results = _translate_batch(client, texts)
             for entry, result in zip(batch, results):
                 if result:
-                    entry.msgstr = result
+                    entry.msgstr = _match_newline_envelope(entry.msgid, result)
                     translated_count += 1
 
         except Exception as exc:
@@ -154,7 +167,7 @@ def translate_po_file(po_path: str, token: str) -> bool:
                     time.sleep(RETRY_DELAY_S)
                     (result,) = _translate_batch(client, [entry.msgid])
                     if result:
-                        entry.msgstr = result
+                        entry.msgstr = _match_newline_envelope(entry.msgid, result)
                         translated_count += 1
                 except Exception as inner:
                     print(f"    Skipping {entry.msgid[:60]!r} — {inner!r}")

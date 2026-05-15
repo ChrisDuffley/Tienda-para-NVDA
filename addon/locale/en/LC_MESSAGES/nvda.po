@@ -6,9 +6,9 @@
 #, fuzzy
 msgid ""
 msgstr ""
-"Project-Id-Version: TiendaNVDA 2026.05.10\n"
+"Project-Id-Version: TiendaNVDA 2026.05.13\n"
 "Report-Msgid-Bugs-To: nvda-translations@groups.io\n"
-"POT-Creation-Date: 2026-05-11 00:29+0000\n"
+"POT-Creation-Date: 2026-05-15 01:01+0000\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -367,7 +367,7 @@ msgstr "Copy card"
 #: addon/globalPlugins/TiendaNVDA/dialogos_tienda_unificada.py:288
 #: addon/globalPlugins/TiendaNVDA/dialogos_tienda_es.py:395
 msgid "Copiar enlace interno NVDA.ES"
-msgstr "Copy NVDA.ES internal link"
+msgstr "Copy internal link NVDA.ES"
 
 #: addon/globalPlugins/TiendaNVDA/dialogos_tienda_unificada.py:293
 #: addon/globalPlugins/TiendaNVDA/dialogos_tienda_unificada.py:417
@@ -434,7 +434,7 @@ msgid ""
 "Este complemento no es compatible. ¿Desea intentar instalarlo de todos "
 "modos?"
 msgstr ""
-"This add-on is not compatible. Do you want to try to install it anyway?"
+"This add-on is not compatible. Do you want to try installing it anyway?"
 
 #: addon/globalPlugins/TiendaNVDA/dialogos_tienda_unificada.py:372
 #: addon/globalPlugins/TiendaNVDA/dialogos_tienda_es.py:446
@@ -597,7 +597,7 @@ msgstr "&Change Server"
 
 #: addon/globalPlugins/TiendaNVDA/dialogos_tienda_es.py:140
 msgid " - Todos los complementos"
-msgstr " - All Add-ons"
+msgstr " - All add-ons"
 
 #: addon/globalPlugins/TiendaNVDA/dialogos_tienda_es.py:141
 msgid " - Complementos API 2026"
@@ -631,7 +631,7 @@ msgid ""
 "{explanation}"
 msgstr ""
 "Indicator: {indicator}\n"
-"Source: [EN] NVDA.ES Store\n"
+"Source: [EN] NVDA Store\n"
 "{explanation}"
 
 #: addon/globalPlugins/TiendaNVDA/dialogos_tienda_es.py:279
@@ -1040,7 +1040,7 @@ msgstr "SOURCE: NVDA.ES\n"
 #: addon/globalPlugins/TiendaNVDA/dialogos_actualizaciones.py:443
 #: addon/globalPlugins/TiendaNVDA/dialogos_actualizaciones.py:453
 msgid "Versión disponible: {}\n"
-msgstr "Available version: {}\n"
+msgstr "Version available: {}\n"
 
 #: addon/globalPlugins/TiendaNVDA/dialogos_actualizaciones.py:445
 #: addon/globalPlugins/TiendaNVDA/dialogos_actualizaciones.py:455
@@ -1416,7 +1416,7 @@ msgid ""
 "\n"
 "Para gestionar los servidores es necesario que la Tienda este cerrada."
 msgstr ""
-"There is already an instance of the NVDA Store open.\n"
+"An instance of the NVDA Store is already open.\n"
 "\n"
 "To manage the servers, the Store must be closed."
 
@@ -1445,8 +1445,8 @@ msgid ""
 "¿Desea restaurar los complementos desde el archivo seleccionado? Esto abrirá"
 " el asistente de instalación por lotes."
 msgstr ""
-"Do you want to restore the add-ons from the selected file? This will open "
-"the batch installation wizard."
+"Do you want to restore add-ons from the selected file? This will open the "
+"batch installation wizard."
 
 #: addon/globalPlugins/TiendaNVDA/__init__.py:726
 msgid "Restaurar"
@@ -1482,17 +1482,17 @@ msgstr ""
 "Integrates the NVDA.ES store and the official NV Access store into a single interface.\n"
 "Features: status indicators, local management (disable/remove), backup/restoration,\n"
 "offline mode, cached translation, download retries, dependency checking,\n"
-"and add-on packaging."
+"and add-on packager."
 
 #. Brief changelog for this version
 #. Translators: what's new content for the add-on version to be shown in the
 #. add-on store
 #: buildVars.py:33
 msgid ""
-"Primera versión de la Tienda Unificada.\n"
-"Integración completa de NVDA.ES y tienda oficial.\n"
-"Nuevo sistema de caché multinivel, backup/restauración y modo offline."
+"*Agregado un actualizador silencioso de idiomas del complemento (en fase beta).\n"
+"* Agregado idioma ruso (Valentín N. Kupriyanov).\n"
+"* Agregado idioma turco (Umut Korkmaz)."
 msgstr ""
-"First version of the Unified Store.\n"
-"Full integration of NVDA.ES and official store.\n"
-"New multi-level caching system, backup/restoration, and offline mode."
+"* Added a silent language updater for the add-on (in beta phase).\n"
+"* Added Russian language (Valentín N. Kupriyanov).\n"
+"* Added Turkish language (Umut Korkmaz)."
